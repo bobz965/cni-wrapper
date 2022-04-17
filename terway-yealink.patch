@@ -1,0 +1,1019 @@
+diff --git a/go.mod b/go.mod
+index 05b4dad..7e67a99 100644
+--- a/go.mod
++++ b/go.mod
+@@ -15,6 +15,7 @@ require (
+ 	github.com/google/uuid v1.2.0
+ 	github.com/onsi/ginkgo v1.16.4
+ 	github.com/onsi/gomega v1.15.0
++	github.com/parnurzeal/gorequest v0.2.16
+ 	github.com/pkg/errors v0.9.1
+ 	github.com/prometheus/client_golang v1.11.0
+ 	github.com/pterm/pterm v0.12.33
+@@ -123,6 +124,7 @@ require (
+ 	k8s.io/gengo v0.0.0-20201214224949-b6c5ce23f027 // indirect
+ 	k8s.io/kube-openapi v0.0.0-20210305001622-591a79e4bda7 // indirect
+ 	k8s.io/utils v0.0.0-20210802155522-efc7438f0176 // indirect
++	moul.io/http2curl v1.0.0 // indirect
+ 	sigs.k8s.io/structured-merge-diff/v4 v4.1.2 // indirect
+ )
+ 
+diff --git a/go.sum b/go.sum
+index 24e1325..dd45377 100644
+--- a/go.sum
++++ b/go.sum
+@@ -431,6 +431,8 @@ github.com/opencontainers/go-digest v1.0.0 h1:apOUWs51W5PlhuyGyz9FCeeBIOUDA/6nW8
+ github.com/opencontainers/go-digest v1.0.0/go.mod h1:0JzlMkj0TRzQZfJkVvzbP0HBR3IKzErnv2BNG4W4MAM=
+ github.com/opencontainers/image-spec v1.0.1 h1:JMemWkRwHx4Zj+fVxWoMCFm/8sYGGrUVojFA6h/TRcI=
+ github.com/opencontainers/image-spec v1.0.1/go.mod h1:BtxoFyWECRxE4U/7sNtV5W15zMzWCbyJoFRP3s7yZA0=
++github.com/parnurzeal/gorequest v0.2.16 h1:T/5x+/4BT+nj+3eSknXmCTnEVGSzFzPGdpqmUVVZXHQ=
++github.com/parnurzeal/gorequest v0.2.16/go.mod h1:3Kh2QUMJoqw3icWAecsyzkpY7UzRfDhbRdTjtNwNiUE=
+ github.com/pascaldekloe/goe v0.0.0-20180627143212-57f6aae5913c/go.mod h1:lzWF7FIEvWOWxwDKqyGYQf6ZUaNfKdP144TG7ZOy1lc=
+ github.com/pelletier/go-toml v1.2.0/go.mod h1:5z9KED0ma1S8pY6P1sdut58dfprrGBbd/94hg7ilaic=
+ github.com/peterbourgon/diskv v2.0.1+incompatible/go.mod h1:uqqh8zWWbv1HBMNONnaR/tNboyR3/BZd58JJSHlUSCU=
+@@ -982,6 +984,8 @@ k8s.io/utils v0.0.0-20201110183641-67b214c5f920/go.mod h1:jPW/WVKK9YHAvNhRxK0md/
+ k8s.io/utils v0.0.0-20210527160623-6fdb442a123b/go.mod h1:jPW/WVKK9YHAvNhRxK0md/EJ228hCsBRufyofKtW8HA=
+ k8s.io/utils v0.0.0-20210802155522-efc7438f0176 h1:Mx0aa+SUAcNRQbs5jUzV8lkDlGFU8laZsY9jrcVX5SY=
+ k8s.io/utils v0.0.0-20210802155522-efc7438f0176/go.mod h1:jPW/WVKK9YHAvNhRxK0md/EJ228hCsBRufyofKtW8HA=
++moul.io/http2curl v1.0.0 h1:6XwpyZOYsgZJrU8exnG87ncVkU1FVCcTRpwzOkTDUi8=
++moul.io/http2curl v1.0.0/go.mod h1:f6cULg+e4Md/oW1cYmwW4IWQOVl2lGbmCNGOHvzX2kE=
+ rsc.io/binaryregexp v0.2.0/go.mod h1:qTv7/COck+e2FymRvadv62gMdZztPaShugOCi3I+8D8=
+ rsc.io/quote/v3 v3.1.0/go.mod h1:yEA65RcK8LyAZtP9Kv3t0HmxON59tX3rD+tICJqUlj0=
+ rsc.io/sampler v1.3.0/go.mod h1:T1hPZKmBbMNahiBKFy5HrXp6adAjACjK9JXDnKaTXpA=
+diff --git a/plugin/rpcshim/kubeovn.go b/plugin/rpcshim/kubeovn.go
+new file mode 100644
+index 0000000..2985e5f
+--- /dev/null
++++ b/plugin/rpcshim/kubeovn.go
+@@ -0,0 +1,260 @@
++package rpcshim
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"net"
++	"net/http"
++	"os"
++	"syscall"
++	"time"
++
++	"github.com/AliyunContainerService/terway/plugin/driver/utils"
++	"github.com/AliyunContainerService/terway/plugin/rpcshim/util"
++	"github.com/AliyunContainerService/terway/rpc"
++	"github.com/containernetworking/plugins/pkg/ns"
++	"github.com/parnurzeal/gorequest"
++	"github.com/vishvananda/netlink"
++	"google.golang.org/grpc"
++)
++
++var (
++	_ TerwayBackendClient = (*CniServerClient)(nil)
++)
++
++// type KubeOVNClient struct {
++// }
++
++type Terway2OvnIPRequest struct {
++	PodName      string `json:"pod_name"`
++	PodNamespace string `json:"pod_namespace"`
++	ContainerID  string `json:"container_id"`
++	NetNs        string `json:"net_ns"`
++	IfName       string `json:"if_name"`
++	Provider     string `json:"provider"`
++	CniType      string `json:"cni_type"`
++}
++
++type Ovn2TerwayIPResponse struct {
++	PodIP     string `json:"PodIP,omitempty"`
++	PodCIDR   string `json:"PodCIDR,omitempty"`   // subnet for pod, value form vSwitch CIDR or podCIDR
++	GatewayIP string `json:"GatewayIP,omitempty"` // gw for the subnet
++	Protocol  string `json:"protocol"`
++	Err       string `json:"error"`
++}
++
++// CniServerClient is the client to visit cniserver
++// 仅支持 IPv4
++type CniServerClient struct {
++	*gorequest.SuperAgent
++
++	Netns  string
++	IfName string
++	MAC    string
++}
++
++// Route represents a requested route
++type Route struct {
++	Destination string `json:"dst"`
++	Gateway     string `json:"gw"`
++}
++
++// NewCniServerClient return a new cniserver client
++func NewCniServerClient(socketAddress string) *CniServerClient {
++	if socketAddress == "" {
++		socketAddress = "/run/openvswitch/kube-ovn-daemon.sock"
++	}
++
++	request := gorequest.New()
++	request.Transport = &http.Transport{DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
++		return net.Dial("unix", socketAddress)
++	}}
++
++	var mac string
++	if ln, err := netlink.LinkByName(os.Getenv("MASTER")); err == nil {
++		mac = ln.Attrs().HardwareAddr.String()
++	}
++
++	return &CniServerClient{
++		SuperAgent: request,
++		Netns:      os.Getenv("CNI_NETNS"),
++		IfName:     os.Getenv("CNI_IFNAME"),
++		MAC:        mac,
++	}
++}
++
++// Add pod request
++func (csc CniServerClient) Add(podRequest Terway2OvnIPRequest, resp *Ovn2TerwayIPResponse) error {
++	return csc.AddWithRetry(podRequest, resp, 3)
++}
++func (csc CniServerClient) AddWithRetry(podRequest Terway2OvnIPRequest, resp *Ovn2TerwayIPResponse, remain int) error {
++	res, _, errs := csc.Post("http://dummy/api/v1/add").Send(podRequest).EndStruct(&resp)
++	if len(errs) != 0 {
++		err := errs[0]
++		if errors.Is(err, syscall.ECONNREFUSED) {
++			if remain > 0 {
++				time.Sleep(5 * time.Second)
++				return csc.AddWithRetry(podRequest, resp, remain-1)
++			}
++		}
++		return err
++	}
++	if res.StatusCode != 200 {
++		return fmt.Errorf("cni terway failed to request ip: [%d] %s", res.StatusCode, resp.Err)
++	}
++	// fmt.Printf("cni terway request response: %+v\n", resp)
++	return nil
++}
++
++// // Get pod request
++// func (csc CniServerClient) Get(podRequest Terway2OvnIPRequest, resp *Ovn2TerwayIPResponse) error {
++// 	res, _, errors := csc.Post("http://dummy/api/v1/get").Send(podRequest).EndStruct(&resp)
++// 	if len(errors) != 0 {
++// 		return errors[0]
++// 	}
++// 	if res.StatusCode != 200 {
++// 		return fmt.Errorf("cni terway failed to get ip: [%d] %s", res.StatusCode, resp.Err)
++// 	}
++// 	// fmt.Printf("cni terway request response: %+v\n", resp)
++// 	return nil
++// }
++
++// Del pod request
++func (csc CniServerClient) Del(podRequest Terway2OvnIPRequest) error {
++	res, body, errors := csc.Post("http://dummy/api/v1/del").Send(podRequest).End()
++	if len(errors) != 0 {
++		return errors[0]
++	}
++	if res.StatusCode != 204 {
++		return fmt.Errorf("cni terway failed to delete ip: [%d] %s", res.StatusCode, body)
++	}
++	return nil
++}
++
++func (csc *CniServerClient) AllocIP(ctx context.Context, in *AllocIPRequest, opts ...grpc.CallOption) (*AllocIPReply, error) {
++	podName := PodInfoKey(in.GetK8SPodName(), in.GetK8SPodNamespace())
++
++	terwayReq := Terway2OvnIPRequest{
++		CniType:      util.CniTypeName,
++		PodName:      in.GetK8SPodName(),
++		PodNamespace: in.GetK8SPodNamespace(),
++		ContainerID:  in.GetK8SPodInfraContainerId(),
++		NetNs:        in.GetNetns(),
++		IfName:       in.GetIfName(),
++		Provider:     util.OvnProvider,
++	}
++	response := Ovn2TerwayIPResponse{}
++	err := csc.Add(terwayReq, &response)
++	if err != nil {
++		utils.Log.Errorf("cmd add failed to get ip from ovn for pod %+v, %+v", podName, err)
++		return nil, fmt.Errorf("cmd add failed to get ip from ovn for pod")
++	}
++
++	reply := &AllocIPReply{
++		Success: true,
++		IPType:  rpc.IPType_TypeENIMultiIP,
++		IPv4:    true,
++		NetConfs: []*rpc.NetConf{
++			{
++				BasicInfo: &rpc.BasicInfo{
++					PodIP: &rpc.IPSet{
++						IPv4: response.PodIP,
++					},
++					PodCIDR: &rpc.IPSet{
++						IPv4: response.PodCIDR,
++					},
++					GatewayIP: &rpc.IPSet{
++						IPv4: response.GatewayIP,
++					},
++					ServiceCIDR: &rpc.IPSet{
++						IPv4: os.Getenv("SERVICE_CIDR"),
++					},
++				},
++				ENIInfo: &rpc.ENIInfo{
++					MAC: csc.MAC,
++				},
++				IfName:       in.GetIfName(),
++				DefaultRoute: in.GetIfName() == "eth0" || in.GetIfName() == "",
++			},
++		},
++	}
++
++	return reply, nil
++}
++
++func (csc *CniServerClient) ReleaseIP(ctx context.Context, in *ReleaseIPRequest, opts ...grpc.CallOption) (*ReleaseIPReply, error) {
++	podName := PodInfoKey(in.GetK8SPodName(), in.GetK8SPodNamespace())
++
++	terwayReq := Terway2OvnIPRequest{
++		CniType:      util.CniTypeName,
++		PodName:      in.GetK8SPodName(),
++		PodNamespace: in.GetK8SPodNamespace(),
++		ContainerID:  in.GetK8SPodInfraContainerId(),
++		NetNs:        csc.Netns,
++		IfName:       csc.IfName,
++		Provider:     util.OvnProvider,
++	}
++
++	err := csc.Del(terwayReq)
++	if err != nil {
++		utils.Log.Errorf("cmd del failed to delete ip from ovn for pod %+v, %+v", podName, err)
++		return nil, fmt.Errorf("cmd del failed to delete ip from ovn for pod")
++	}
++
++	return &ReleaseIPReply{
++		Success: true,
++		IPv4:    true,
++	}, nil
++}
++
++func (csc *CniServerClient) GetIPInfo(ctx context.Context, in *GetInfoRequest, opts ...grpc.CallOption) (*GetInfoReply, error) {
++	basicInfo := &rpc.BasicInfo{
++		PodIP:     &rpc.IPSet{},
++		PodCIDR:   &rpc.IPSet{},
++		GatewayIP: &rpc.IPSet{},
++	}
++
++	ns.WithNetNSPath(csc.Netns, func(nn ns.NetNS) error {
++		ln, err := netlink.LinkByName(csc.IfName)
++		if err != nil {
++			if _, ok := err.(netlink.LinkNotFoundError); ok {
++				// 网卡已删除
++				return nil
++			}
++			return err
++		}
++
++		if addrs, err := netlink.AddrList(ln, netlink.FAMILY_V4); err != nil {
++			if len(addrs) > 0 {
++				addr := addrs[0]
++				basicInfo.PodIP.IPv4 = addr.IP.String()
++				basicInfo.PodCIDR.IPv4 = addr.IP.Mask(addr.Mask).String()
++			}
++		}
++		// if addrs, err := netlink.AddrList(ln, netlink.FAMILY_V6); err != nil {
++		// 	if len(addrs) > 0 {
++		// 		addr := addrs[0]
++		// 		basicInfo.PodIP.IPv6 = addr.IP.String()
++		// 		basicInfo.PodCIDR.IPv6 = addr.IP.Mask(addr.Mask).String()
++		// 	}
++		// }
++		return nil
++	})
++
++	var reply = &GetInfoReply{
++		Success: true,
++		IPType:  rpc.IPType_TypeENIMultiIP, // 识别为 IPVLAN
++		IPv4:    true,
++	}
++
++	if basicInfo.PodIP.IPv4 != "" || basicInfo.PodIP.IPv6 != "" {
++		reply.NetConfs = append(reply.NetConfs, &rpc.NetConf{BasicInfo: basicInfo})
++	}
++
++	return reply, nil
++}
++
++func (csc *CniServerClient) RecordEvent(ctx context.Context, in *EventRequest, opts ...grpc.CallOption) (*EventReply, error) {
++	return nil, nil
++}
+diff --git a/plugin/rpcshim/shim.go b/plugin/rpcshim/shim.go
+new file mode 100644
+index 0000000..f93d6cb
+--- /dev/null
++++ b/plugin/rpcshim/shim.go
+@@ -0,0 +1,66 @@
++package rpcshim
++
++import (
++	"context"
++	"fmt"
++	"io"
++	"net"
++
++	"github.com/AliyunContainerService/terway/rpc"
++	"google.golang.org/grpc"
++)
++
++type (
++	TerwayBackendClient = rpc.TerwayBackendClient
++
++	AllocIPRequest   = rpc.AllocIPRequest
++	AllocIPReply     = rpc.AllocIPReply
++	ReleaseIPRequest = rpc.ReleaseIPRequest
++	ReleaseIPReply   = rpc.ReleaseIPReply
++	GetInfoRequest   = rpc.GetInfoRequest
++	GetInfoReply     = rpc.GetInfoReply
++	EventRequest     = rpc.EventRequest
++	EventReply       = rpc.EventReply
++)
++
++var (
++	defaultSocketPath = "/var/run/eni/eni.socket"
++)
++
++func GetNetworkClient(ctx context.Context, rpcType, rpcSocket string) (TerwayBackendClient, io.Closer, error) {
++
++	switch rpcType {
++	case "terway":
++		return NewTerwayBackendClient(ctx, rpcSocket)
++	case "", "kubeovn":
++	default:
++
++	}
++
++	return NewCniServerClient(rpcSocket), io.NopCloser(nil), nil
++}
++
++func PodInfoKey(name, namespace string) string {
++	return fmt.Sprintf("%s/%s", name, namespace)
++}
++
++func NewTerwayBackendClient(ctx context.Context, socketPath string) (TerwayBackendClient, io.Closer, error) {
++	if socketPath == "" {
++		socketPath = defaultSocketPath
++	}
++	conn, err := grpc.DialContext(ctx, socketPath, grpc.WithInsecure(), grpc.WithContextDialer(
++		func(ctx context.Context, s string) (net.Conn, error) {
++			unixAddr, err := net.ResolveUnixAddr("unix", socketPath)
++			if err != nil {
++				return nil, fmt.Errorf("error resolve addr, %w", err)
++			}
++			d := net.Dialer{}
++			return d.DialContext(ctx, "unix", unixAddr.String())
++		}))
++	if err != nil {
++		return nil, nil, fmt.Errorf("error dial to terway %s, terway pod may staring, %w", socketPath, err)
++	}
++
++	client := rpc.NewTerwayBackendClient(conn)
++	return client, conn, nil
++}
+diff --git a/plugin/rpcshim/util/kubeovn.go b/plugin/rpcshim/util/kubeovn.go
+new file mode 100644
+index 0000000..c602f63
+--- /dev/null
++++ b/plugin/rpcshim/util/kubeovn.go
+@@ -0,0 +1,160 @@
++package util
++
++const (
++	CniTypeName = "kube-ovn"
++
++	ControllerName = "kube-ovn-controller"
++
++	AllocatedAnnotation  = "ovn.kubernetes.io/allocated"
++	RoutedAnnotation     = "ovn.kubernetes.io/routed"
++	MacAddressAnnotation = "ovn.kubernetes.io/mac_address"
++	IpAddressAnnotation  = "ovn.kubernetes.io/ip_address"
++	CidrAnnotation       = "ovn.kubernetes.io/cidr"
++	GatewayAnnotation    = "ovn.kubernetes.io/gateway"
++	IpPoolAnnotation     = "ovn.kubernetes.io/ip_pool"
++	BgpAnnotation        = "ovn.kubernetes.io/bgp"
++	SnatAnnotation       = "ovn.kubernetes.io/snat"
++	EipAnnotation        = "ovn.kubernetes.io/eip"
++	ChassisAnnotation    = "ovn.kubernetes.io/chassis"
++
++	VpcNatGatewayAnnotation     = "ovn.kubernetes.io/vpc_nat_gw"
++	VpcNatGatewayInitAnnotation = "ovn.kubernetes.io/vpc_nat_gw_init"
++	VpcEipsAnnotation           = "ovn.kubernetes.io/vpc_eips"
++	VpcFloatingIpMd5Annotation  = "ovn.kubernetes.io/vpc_floating_ips"
++	VpcDnatMd5Annotation        = "ovn.kubernetes.io/vpc_dnat_md5"
++	VpcSnatMd5Annotation        = "ovn.kubernetes.io/vpc_snat_md5"
++	VpcCIDRsAnnotation          = "ovn.kubernetes.io/vpc_cidrs"
++	VpcLbAnnotation             = "ovn.kubernetes.io/vpc_lb"
++	VpcExternalLabel            = "ovn.kubernetes.io/vpc_external"
++
++	LogicalRouterAnnotation = "ovn.kubernetes.io/logical_router"
++	VpcAnnotation           = "ovn.kubernetes.io/vpc"
++
++	PortSecurityAnnotationTemplate = "%s.kubernetes.io/port_security"
++	PortVipAnnotationTemplate      = "%s.kubernetes.io/port_vips"
++	PortSecurityAnnotation         = "ovn.kubernetes.io/port_security"
++	NorthGatewayAnnotation         = "ovn.kubernetes.io/north_gateway"
++
++	AllocatedAnnotationSuffix       = ".kubernetes.io/allocated"
++	AllocatedAnnotationTemplate     = "%s.kubernetes.io/allocated"
++	RoutedAnnotationTemplate        = "%s.kubernetes.io/routed"
++	MacAddressAnnotationTemplate    = "%s.kubernetes.io/mac_address"
++	IpAddressAnnotationTemplate     = "%s.kubernetes.io/ip_address"
++	CidrAnnotationTemplate          = "%s.kubernetes.io/cidr"
++	GatewayAnnotationTemplate       = "%s.kubernetes.io/gateway"
++	IpPoolAnnotationTemplate        = "%s.kubernetes.io/ip_pool"
++	LogicalSwitchAnnotationTemplate = "%s.kubernetes.io/logical_switch"
++	LogicalRouterAnnotationTemplate = "%s.kubernetes.io/logical_router"
++	VlanIdAnnotationTemplate        = "%s.kubernetes.io/vlan_id"
++	NetworkTypeTemplate             = "%s.kubernetes.io/network_type"
++	IngressRateAnnotationTemplate   = "%s.kubernetes.io/ingress_rate"
++	EgressRateAnnotationTemplate    = "%s.kubernetes.io/egress_rate"
++	SecurityGroupAnnotationTemplate = "%s.kubernetes.io/security_groups"
++	LiveMigrationAnnotationTemplate = "%s.kubernetes.io/allow_live_migration"
++	DefaultRouteAnnotationTemplate  = "%s.kubernetes.io/default_route"
++
++	ProviderNetworkTemplate          = "%s.kubernetes.io/provider_network"
++	ProviderNetworkReadyTemplate     = "%s.provider-network.kubernetes.io/ready"
++	ProviderNetworkExcludeTemplate   = "%s.provider-network.kubernetes.io/exclude"
++	ProviderNetworkInterfaceTemplate = "%s.provider-network.kubernetes.io/interface"
++	ProviderNetworkMtuTemplate       = "%s.provider-network.kubernetes.io/mtu"
++	MirrorControlAnnotationTemplate  = "%s.kubernetes.io/mirror"
++	PodNicAnnotationTemplate         = "%s.kubernetes.io/pod_nic_type"
++
++	ExcludeIpsAnnotation = "ovn.kubernetes.io/exclude_ips"
++
++	IngressRateAnnotation = "ovn.kubernetes.io/ingress_rate"
++	EgressRateAnnotation  = "ovn.kubernetes.io/egress_rate"
++
++	PortNameAnnotation      = "ovn.kubernetes.io/port_name"
++	LogicalSwitchAnnotation = "ovn.kubernetes.io/logical_switch"
++
++	TunnelInterfaceAnnotation = "ovn.kubernetes.io/tunnel_interface"
++
++	SubnetNameLabel    = "ovn.kubernetes.io/subnet"
++	ICGatewayLabel     = "ovn.kubernetes.io/ic-gw"
++	ExGatewayLabel     = "ovn.kubernetes.io/external-gw"
++	VpcNatGatewayLabel = "ovn.kubernetes.io/vpc-nat-gw"
++	VpcLbLabel         = "ovn.kubernetes.io/vpc_lb"
++
++	ProtocolTCP = "tcp"
++	ProtocolUDP = "udp"
++
++	NetworkTypeVlan   = "vlan"
++	NetworkTypeGeneve = "geneve"
++
++	NodeNic           = "ovn0"
++	NodeAllowPriority = "3000"
++
++	SecurityGroupHighestPriority = "2300"
++	SecurityGroupAllowPriority   = "2004"
++	SecurityGroupDropPriority    = "2003"
++
++	IngressAllowPriority = "2001"
++	IngressDefaultDrop   = "2000"
++
++	EgressAllowPriority = "2001"
++	EgressDefaultDrop   = "2000"
++
++	SubnetAllowPriority = "1001"
++	DefaultDropPriority = "1000"
++
++	GeneveHeaderLength = 100
++	TcpIpHeaderLength  = 40
++
++	OvnProvider                 = "ovn"
++	AttachmentNetworkAnnotation = "k8s.v1.cni.cncf.io/networks"
++	DefaultNetworkAnnotation    = "v1.multus-cni.io/default-network"
++
++	SRIOVResourceName = "mellanox.com/cx5_sriov_switchdev"
++
++	InterconnectionConfig  = "ovn-ic-config"
++	ExternalGatewayConfig  = "ovn-external-gw-config"
++	InterconnectionSwitch  = "ts"
++	ExternalGatewaySwitch  = "ovn-external"
++	VpcNatGatewayConfig    = "ovn-vpc-nat-gw-config"
++	VpcExternalNet         = "ovn-vpc-external-network"
++	VpcLbNetworkAttachment = "ovn-vpc-lb"
++
++	DefaultVpc    = "ovn-cluster"
++	DefaultSubnet = "ovn-default"
++
++	EcmpRouteType   = "ecmp"
++	NormalRouteType = "normal"
++
++	PodRouterPolicyPriority  = 20000
++	NodeRouterPolicyPriority = 30000
++
++	OffloadType  = "offload-port"
++	InternalType = "internal-port"
++
++	ChassisLoc     = "/etc/openvswitch/system-id.conf"
++	HostnameEnv    = "KUBE_NODE_NAME"
++	ChasRetryTime  = 5
++	ChasRetryIntev = 1
++
++	VfioSysDir = "/sys/bus/pci/drivers/vfio-pci"
++	NetSysDir  = "/sys/class/net"
++
++	MirrorControlAnnotation = "ovn.kubernetes.io/mirror"
++	MirrorDefaultName       = "m0"
++
++	DenyAllSecurityGroup = "kubeovn_deny_all"
++
++	HtbQos   = "linux-htb"
++	NetemQos = "linux-netem"
++
++	HtbQosHigh   = "htbqos-high"
++	HtbQosMedium = "htbqos-medium"
++	HtbQosLow    = "htbqos-low"
++
++	PriorityAnnotation        = "ovn.kubernetes.io/priority"
++	NetemQosLatencyAnnotation = "ovn.kubernetes.io/latency"
++	NetemQosLimitAnnotation   = "ovn.kubernetes.io/limit"
++	NetemQosLossAnnotation    = "ovn.kubernetes.io/loss"
++
++	PriorityAnnotationTemplate        = "%s.kubernetes.io/priority"
++	NetemQosLatencyAnnotationTemplate = "%s.kubernetes.io/latency"
++	NetemQosLimitAnnotationTemplate   = "%s.kubernetes.io/limit"
++	NetemQosLossAnnotationTemplate    = "%s.kubernetes.io/loss"
++)
+diff --git a/plugin/terway/cni.go b/plugin/terway/cni.go
+index d7d3b6d..357d732 100644
+--- a/plugin/terway/cni.go
++++ b/plugin/terway/cni.go
+@@ -12,6 +12,7 @@ import (
+ 	"github.com/AliyunContainerService/terway/plugin/datapath"
+ 	"github.com/AliyunContainerService/terway/plugin/driver/types"
+ 	"github.com/AliyunContainerService/terway/plugin/driver/utils"
++	"github.com/AliyunContainerService/terway/plugin/rpcshim"
+ 	"github.com/AliyunContainerService/terway/rpc"
+ 	terwayTypes "github.com/AliyunContainerService/terway/types"
+ 
+@@ -57,13 +58,13 @@ func main() {
+ 	skel.PluginMain(cmdAdd, cmdCheck, cmdDel, version.PluginSupports("0.3.0", "0.3.1", "0.4.0"), bv.BuildString("terway"))
+ }
+ 
+-func parseCmdArgs(args *skel.CmdArgs) (ns.NetNS, *types.CNIConf, *types.K8SArgs, error) {
++func parseCmdArgs(args *skel.CmdArgs) (ns.NetNS, *CNIConf, *types.K8SArgs, error) {
+ 	netNS, err := ns.GetNS(args.Netns)
+ 	if err != nil {
+ 		return nil, nil, nil, err
+ 	}
+ 
+-	conf := types.CNIConf{}
++	conf := CNIConf{}
+ 	if err = json.Unmarshal(args.StdinData, &conf); err != nil {
+ 		return nil, nil, nil, fmt.Errorf("error parse args, %w", err)
+ 	}
+@@ -77,6 +78,7 @@ func parseCmdArgs(args *skel.CmdArgs) (ns.NetNS, *types.CNIConf, *types.K8SArgs,
+ 		return nil, nil, nil, fmt.Errorf("error parse args, %w", err)
+ 	}
+ 
++	conf.UpdateEnv()
+ 	return netNS, &conf, &k8sConfig, nil
+ }
+ 
+@@ -104,7 +106,7 @@ func cmdAdd(args *skel.CmdArgs) error {
+ 	ctx, cancel := context.WithTimeout(context.Background(), defaultCniTimeout)
+ 	defer cancel()
+ 
+-	client, conn, err := getNetworkClient(ctx)
++	client, conn, err := rpcshim.GetNetworkClient(ctx, conf.RPCType, conf.ServerSocket)
+ 	if err != nil {
+ 		return fmt.Errorf("error create grpc client, %w", err)
+ 	}
+@@ -315,6 +317,10 @@ func cmdAdd(args *skel.CmdArgs) error {
+ 
+ 	result := &current.Result{}
+ 
++	if err := postAddInterface(cniNetns, result, conf, args, containerIPNet); err != nil {
++		logger.Errorf("postAddInterface: %v", err)
++	}
++
+ 	result.Interfaces = append(result.Interfaces, &current.Interface{
+ 		Name: args.IfName,
+ 	})
+@@ -382,7 +388,7 @@ func cmdDel(args *skel.CmdArgs) error {
+ 	ctx, cancel := context.WithTimeout(context.Background(), defaultCniTimeout)
+ 	defer cancel()
+ 
+-	client, conn, err := getNetworkClient(ctx)
++	client, conn, err := rpcshim.GetNetworkClient(ctx, conf.RPCType, conf.ServerSocket)
+ 	if err != nil {
+ 		return fmt.Errorf("error create grpc client, %w", err)
+ 	}
+@@ -460,6 +466,21 @@ func cmdDel(args *skel.CmdArgs) error {
+ 		return fmt.Errorf("error release ip for pod, maybe cause resource leak: %v, %v", err, reply)
+ 	}
+ 
++	if conf.LocalDns != "" && len(getResult.GetNetConfs()) > 0 {
++		netConf := getResult.GetNetConfs()[0]
++		basicInfo := netConf.GetBasicInfo()
++		if basicInfo != nil {
++			ipset := netConf.GetBasicInfo().GetPodIP()
++			var ip net.IP
++			if ipset.IPv4 != "" {
++				ip = net.ParseIP(ipset.IPv4)
++			} else {
++				ip = net.ParseIP(ipset.IPv6)
++			}
++			RemoveHostToContainerPolicyRoute("", net.ParseIP(conf.LocalDns), ip)
++		}
++	}
++
+ 	return cniTypes.PrintResult(&current.Result{
+ 		CNIVersion: conf.CNIVersion,
+ 	}, conf.CNIVersion)
+@@ -494,7 +515,7 @@ func cmdCheck(args *skel.CmdArgs) error {
+ 	ctx, cancel := context.WithTimeout(context.Background(), defaultCniTimeout)
+ 	defer cancel()
+ 
+-	client, conn, err := getNetworkClient(ctx)
++	client, conn, err := rpcshim.GetNetworkClient(ctx, conf.RPCType, conf.ServerSocket)
+ 	if err != nil {
+ 		return fmt.Errorf("error create grpc client, %w", err)
+ 	}
+@@ -615,7 +636,7 @@ func getNetworkClient(ctx context.Context) (rpc.TerwayBackendClient, *grpc.Clien
+ 	return client, conn, nil
+ }
+ 
+-func parseSetupConf(args *skel.CmdArgs, alloc *rpc.NetConf, conf *types.CNIConf, ipType rpc.IPType) (*types.SetupConfig, error) {
++func parseSetupConf(args *skel.CmdArgs, alloc *rpc.NetConf, conf *CNIConf, ipType rpc.IPType) (*types.SetupConfig, error) {
+ 	var (
+ 		err            error
+ 		containerIPNet *terwayTypes.IPNetSet
+@@ -728,7 +749,7 @@ func parseSetupConf(args *skel.CmdArgs, alloc *rpc.NetConf, conf *types.CNIConf,
+ 	}, nil
+ }
+ 
+-func parseTearDownConf(alloc *rpc.NetConf, conf *types.CNIConf, ipType rpc.IPType) (*types.TeardownCfg, error) {
++func parseTearDownConf(alloc *rpc.NetConf, conf *CNIConf, ipType rpc.IPType) (*types.TeardownCfg, error) {
+ 	if alloc.GetBasicInfo() == nil {
+ 		return nil, fmt.Errorf("return empty pod alloc info: %v", alloc)
+ 	}
+@@ -760,7 +781,7 @@ func parseTearDownConf(alloc *rpc.NetConf, conf *types.CNIConf, ipType rpc.IPTyp
+ 	return &types.TeardownCfg{DP: dp, ContainerIPNet: containerIPNet}, nil
+ }
+ 
+-func parseCheckConf(args *skel.CmdArgs, alloc *rpc.NetConf, conf *types.CNIConf, ipType rpc.IPType) (*types.CheckConfig, error) {
++func parseCheckConf(args *skel.CmdArgs, alloc *rpc.NetConf, conf *CNIConf, ipType rpc.IPType) (*types.CheckConfig, error) {
+ 	var (
+ 		err            error
+ 		containerIPNet *terwayTypes.IPNetSet
+diff --git a/plugin/terway/patch.go b/plugin/terway/patch.go
+new file mode 100644
+index 0000000..c1c7406
+--- /dev/null
++++ b/plugin/terway/patch.go
+@@ -0,0 +1,344 @@
++package main
++
++import (
++	"fmt"
++	"net"
++	"os"
++	"path/filepath"
++	"strings"
++
++	"github.com/AliyunContainerService/terway/plugin/driver/types"
++	"github.com/AliyunContainerService/terway/plugin/driver/utils"
++	terwayTypes "github.com/AliyunContainerService/terway/types"
++	"github.com/containernetworking/cni/pkg/skel"
++	"github.com/containernetworking/cni/pkg/types/current"
++	"github.com/containernetworking/plugins/pkg/ns"
++	"github.com/vishvananda/netlink"
++)
++
++func init() {
++	// 屏蔽普通日志
++	// utils.DefaultLogger.SetOutput(io.Discard)
++	utils.SetLogDebug()
++
++	os.MkdirAll(filepath.Dir(terwayCNILock), 0755)
++}
++
++type CNIConf struct {
++	types.CNIConf
++
++	// LocalDnsIP is the k8s local dns ip
++	LocalDns string `json:"localdns"`
++
++	// SvcCidr is the k8s svc cidr
++	Svc string `json:"svc"`
++
++	ServiceCIDRv6 string `json:"serviceCIDRv6"`
++
++	NodeCIDR   string `json:"nodeCIDR"`
++	NodeCIDRv6 string `json:"nodeCIDRv6"`
++
++	Master string `json:"master"`
++
++	ServerSocket string `json:"serverSocket"`
++	RPCType      string `json:"rpcType"`
++}
++
++func (n *CNIConf) IPVlan() bool {
++	return n.ENIIPVirtualType == "" || strings.ToLower(n.ENIIPVirtualType) == "ipvlan"
++}
++
++func (n *CNIConf) UpdateEnv() {
++	os.Setenv("SERVICE_CIDR", n.Svc)
++	os.Setenv("SERVICE_CIDR_V6", n.ServiceCIDRv6)
++	os.Setenv("MASTER", n.Master)
++}
++
++// postAddInterface CNI 插件创建网卡成功后调用
++func postAddInterface(cniNetns ns.NetNS, result *current.Result, conf *CNIConf, args *skel.CmdArgs, containerIPNet *terwayTypes.IPNetSet) error {
++	// NodeCIDR
++	// NodeCIDRv6
++	result.DNS = conf.DNS
++	if conf.LocalDns != "" {
++		// TODO: ensure route
++		if len(result.DNS.Nameservers) > 0 {
++			result.DNS.Nameservers = append([]string{conf.LocalDns}, result.DNS.Nameservers...)
++		}
++
++		localDnsIP := net.ParseIP(conf.LocalDns)
++		if ipv4 := localDnsIP.To4(); ipv4 != nil {
++			EnsureHostToContainerPolicyRoute(
++				cniNetns, conf.Master, ipv4, args.IfName,
++				&net.IPNet{
++					IP:   containerIPNet.IPv4.IP.Mask(containerIPNet.IPv4.Mask),
++					Mask: containerIPNet.IPv4.Mask,
++				},
++			)
++		} else {
++			EnsureHostToContainerPolicyRoute(
++				cniNetns, conf.Master, localDnsIP, args.IfName,
++				&net.IPNet{
++					IP:   containerIPNet.IPv6.IP.Mask(containerIPNet.IPv6.Mask),
++					Mask: containerIPNet.IPv6.Mask,
++				},
++			)
++		}
++	}
++
++	if conf.Master != "" {
++		if containerIPNet.IPv4 != nil {
++			EnsureRouteToServiceCIDR(
++				cniNetns, conf.Svc, args.IfName,
++				&net.IPNet{
++					IP:   containerIPNet.IPv4.IP.Mask(containerIPNet.IPv4.Mask),
++					Mask: containerIPNet.IPv4.Mask,
++				},
++			)
++
++			if conf.NodeCIDR != "" {
++				EnsureRouteToServiceCIDR(
++					cniNetns, conf.NodeCIDR, args.IfName,
++					&net.IPNet{
++						IP:   containerIPNet.IPv4.IP.Mask(containerIPNet.IPv4.Mask),
++						Mask: containerIPNet.IPv4.Mask,
++					},
++				)
++			}
++		}
++		if containerIPNet.IPv6 != nil {
++			EnsureRouteToServiceCIDR(
++				cniNetns, conf.ServiceCIDRv6, args.IfName,
++				&net.IPNet{
++					IP:   containerIPNet.IPv6.IP.Mask(containerIPNet.IPv6.Mask),
++					Mask: containerIPNet.IPv6.Mask,
++				},
++			)
++
++			if conf.NodeCIDRv6 != "" {
++				EnsureRouteToServiceCIDR(
++					cniNetns, conf.NodeCIDRv6, args.IfName,
++					&net.IPNet{
++						IP:   containerIPNet.IPv4.IP.Mask(containerIPNet.IPv4.Mask),
++						Mask: containerIPNet.IPv4.Mask,
++					},
++				)
++			}
++		}
++	}
++
++	return nil
++}
++
++const (
++	cniRulePriority = 31234
++	cniRouteTable   = 234
++)
++
++// EnsureHostToContainerPolicyRoute 配置从 Host 到 容器的策略路由
++func EnsureHostToContainerPolicyRoute(cntrNetns ns.NetNS, hostLinkName string, hostIP net.IP, cntrLinkName string, cntrCIDR *net.IPNet) error {
++	logger := utils.Log.WithField("func", "EnsureHostToContainerPolicyRoute")
++
++	var family = netlink.FAMILY_V6
++	if hostIP.To4() != nil {
++		family = netlink.FAMILY_V4
++		hostIP = hostIP.To4()
++		// cntrIP = cntrIP.To4()
++	}
++	hostLink, err := lookupHostLink(hostLinkName, hostIP, family)
++	if err != nil {
++		logger.Errorf("lookupHostLink (%s), err=%v", hostLinkName, err)
++		return err
++	}
++
++	err = cntrNetns.Do(func(nn ns.NetNS) error {
++		cntrLink, err := netlink.LinkByName(cntrLinkName)
++		if err != nil {
++			logger.Errorf("netlink.LinkByName (%s), err=%v", cntrLinkName, err)
++			return err
++		}
++
++		containerToHostRoute := &netlink.Route{
++			Family:    family,
++			Dst:       netlink.NewIPNet(hostIP),
++			LinkIndex: cntrLink.Attrs().Index,
++			Scope:     netlink.SCOPE_LINK,
++		}
++
++		err = netlink.RouteReplace(containerToHostRoute)
++		if err != nil {
++			logger.Errorf("netlink.RouteReplace (%v), err=%v", containerToHostRoute, err)
++			return err
++		}
++
++		return nil
++	})
++
++	if err != nil {
++		logger.Errorf("cntrNetns.Do (), err=%v", err)
++	}
++
++	hostToContainerRoute := &netlink.Route{
++		Family:    family,
++		LinkIndex: hostLink.Attrs().Index,
++		Dst:       cntrCIDR,
++		Src:       hostIP,
++		Scope:     netlink.SCOPE_LINK,
++		Table:     cniRouteTable,
++	}
++	err = netlink.RouteReplace(hostToContainerRoute)
++	if err != nil {
++		logger.Errorf("netlink.RouteReplace (%v), err=%v", hostToContainerRoute, err)
++		return err
++	}
++
++	rule := netlink.NewRule()
++	rule.Family = family
++	rule.Src = netlink.NewIPNet(hostIP)
++	rule.Dst = cntrCIDR
++	rule.Priority = cniRulePriority
++	rule.Table = cniRouteTable
++
++	if err := netlink.RuleAdd(rule); err != nil && !os.IsExist(err) {
++		logger.Errorf("netlink.RuleAdd (%v), err=%v", rule, err)
++		return err
++	}
++
++	return nil
++}
++
++// RemoveHostToContainerPolicyRoute 删除从 Host 到 容器的策略路由
++func RemoveHostToContainerPolicyRoute(hostLinkName string, hostIP net.IP, cntrIP net.IP) error {
++	logger := utils.Log.WithField("func", "RemoveHostToContainerPolicyRoute")
++
++	var family = netlink.FAMILY_V6
++	if hostIP.To4() != nil {
++		family = netlink.FAMILY_V4
++		hostIP = hostIP.To4()
++		cntrIP = cntrIP.To4()
++	}
++
++	hostLink, err := lookupHostLink(hostLinkName, hostIP, family)
++	if err != nil {
++		logger.Errorf("lookupHostLink (%s), err=%v", hostLinkName, err)
++		return err
++	}
++
++	hostToContainerRoute := &netlink.Route{
++		Family:    family,
++		LinkIndex: hostLink.Attrs().Index,
++		Dst:       netlink.NewIPNet(cntrIP),
++		Src:       hostIP,
++		Scope:     netlink.SCOPE_LINK,
++		Table:     cniRouteTable,
++	}
++	err = netlink.RouteDel(hostToContainerRoute)
++	if err != nil && !os.IsNotExist(err) {
++		logger.Errorf("netlink.RouteDel (%v), err=%v", hostToContainerRoute, err)
++		return err
++	}
++
++	rule := netlink.NewRule()
++	rule.Family = family
++	rule.Src = netlink.NewIPNet(hostIP)
++	rule.Dst = netlink.NewIPNet(cntrIP)
++	rule.Priority = cniRulePriority
++	rule.Table = cniRouteTable
++
++	if err := netlink.RuleDel(rule); err != nil && !os.IsNotExist(err) {
++		logger.Errorf("netlink.RuleDel (%v), err=%v", rule, err)
++		return err
++	}
++
++	return nil
++}
++
++// EnsureRouteToServiceCIDR 支持 Service CIDR
++func EnsureRouteToServiceCIDR(cntrNetns ns.NetNS, serviceCIDR, cntrLinkName string, cntrCIDR *net.IPNet) error {
++	logger := utils.Log.WithField("func", "EnsureRouteToServiceCIDR")
++
++	_, svcCIDR, err := net.ParseCIDR(serviceCIDR)
++	if err != nil {
++		logger.Errorf("net.ParseCIDR (%s), err=%v", serviceCIDR, err)
++		return err
++	}
++
++	err = cntrNetns.Do(
++		func(nn ns.NetNS) error {
++			cntrLink, err := netlink.LinkByName(cntrLinkName)
++			if err != nil {
++				logger.Errorf("netlink.LinkByName (%s), err=%v", cntrLinkName, err)
++				return err
++			}
++			route := &netlink.Route{
++				Dst:       svcCIDR,
++				Scope:     netlink.SCOPE_LINK,
++				LinkIndex: cntrLink.Attrs().Index,
++			}
++			err = netlink.RouteReplace(route)
++			if err != nil {
++				logger.Errorf("netlink.RouteReplace (%v), err=%v", route, err)
++				return err
++			}
++			logger.Infof("netlink.RouteReplace (%v)", route)
++			return nil
++		},
++	)
++	if err != nil {
++		logger.Errorf("cntrNetns.Do (), err=%v", err)
++	}
++
++	rule := netlink.NewRule()
++	rule.Src = svcCIDR
++	rule.Dst = cntrCIDR
++	rule.Priority = cniRulePriority
++	rule.Table = cniRouteTable
++
++	if err := netlink.RuleDel(rule); err != nil && !os.IsNotExist(err) {
++		logger.Errorf("netlink.RuleDel (%v), err=%v", rule, err)
++		return err
++	}
++
++	return nil
++}
++
++func lookupHostLink(masterLinkName string, hostIP net.IP, family int) (netlink.Link, error) {
++	logger := utils.Log.WithField("func", "lookupHostLink")
++
++	if masterLinkName == "" {
++		links, err := netlink.LinkList()
++		if err != nil {
++			logger.Errorf("netlink.LinkList (), err=%v", err)
++			return nil, netlink.LinkNotFoundError{}
++		}
++
++		for _, ln := range links {
++			if ln.Type() != "ipvlan" {
++				continue
++			}
++
++			// "ipvl_x"
++			if !strings.HasPrefix(ln.Attrs().Name, "ipvl_") {
++				continue
++			}
++			return ln, nil
++		}
++	} else {
++		hostLink, err := netlink.LinkByName(masterLinkName)
++		if err != nil {
++			logger.Errorf("netlink.LinkByName (%s), err=%v", masterLinkName, err)
++			return nil, err
++		}
++
++		name := fmt.Sprintf("ipvl_%d", hostLink.Attrs().Index)
++		hostLink, err = netlink.LinkByName(name)
++		if err != nil {
++			logger.Errorf("netlink.LinkByName (%s), err=%v", name, err)
++			return nil, err
++		}
++
++		return hostLink, nil
++	}
++
++	logger.Errorln("hostLink not found")
++	return nil, netlink.LinkNotFoundError{}
++}
